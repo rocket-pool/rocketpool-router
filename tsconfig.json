@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "strict": false,
+    "allowJs": true,
+    "target": "ES2022",
+    "esModuleInterop": true,
+    "moduleResolution": "node",
+    "resolveJsonModule": true
+  },
+  "include": [
+    "./src/**/*"
+  ]
+}
