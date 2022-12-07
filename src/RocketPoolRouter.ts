@@ -7,11 +7,18 @@ import BalancerRateProvider from "./rates/BalancerRateProvider";
 
 import * as RocketSwapRouter from "./abi/RocketSwapRouter.json";
 
+export enum SwapDirection {
+  ToRETH = 0,
+  ToETH = 1,
+}
+
 interface SwapRoute {
+  direction: SwapDirection;
   uniswapPortion: number;
   balancerPortion: number;
   amountIn: BigNumber;
   amountOut: BigNumber;
+  minAmountOut: BigNumber;
 }
 
 interface RocketPoolRouterOptions {
@@ -69,17 +76,30 @@ class RocketPoolRouter {
       );
     }
 
-    return this.routerContract.swap(swap.uniswapPortion, swap.balancerPortion, swap.amountOut, {
-      value: swap.amountIn,
-    });
+    if (swap.direction === SwapDirection.ToRETH) {
+      return this.routerContract.swapTo(swap.uniswapPortion, swap.balancerPortion, swap.minAmountOut, swap.amountOut, {
+        gasLimit: "2000000",
+        value: swap.amountIn,
+      });
+    } else {
+      return this.routerContract.swapFrom(
+        swap.uniswapPortion,
+        swap.balancerPortion,
+        swap.minAmountOut,
+        swap.amountOut,
+        swap.amountIn
+      );
+    }
   }
 
-  async optimiseSwap(amountIn: BigNumber, steps: number = 10): Promise<SwapRoute> {
+  async optimiseSwap(direction: SwapDirection, amountIn: BigNumber, steps: number = 10): Promise<SwapRoute> {
     let providerCount = this.rateProviders.length;
     let amountPerStep = amountIn.div(steps);
 
+    let rateMethod = direction === SwapDirection.ToRETH ? "getRethOut" : "getEthOut";
+
     let portions: number[] = new Array(providerCount).fill(0);
-    let lastPrices = await Promise.all(this.rateProviders.map((provider) => provider.getAmountOut(amountPerStep)));
+    let lastPrices = await Promise.all(this.rateProviders.map((provider) => provider[rateMethod](amountPerStep)));
     let priceDeltas = lastPrices.map((price) => BigNumber.from(price));
 
     let totalOut = BigNumber.from("0");
@@ -102,16 +122,18 @@ class RocketPoolRouter {
         break;
       }
 
-      let nextPrice = await this.rateProviders[most].getAmountOut(amountPerStep.mul(portions[most] + 1));
+      let nextPrice = await this.rateProviders[most][rateMethod](amountPerStep.mul(portions[most] + 1));
       priceDeltas[most] = nextPrice.sub(lastPrices[most]);
       lastPrices[most] = nextPrice;
     }
 
     return <SwapRoute>{
+      direction: direction,
       uniswapPortion: portions[0],
       balancerPortion: portions[1],
       amountIn: amountIn,
       amountOut: totalOut,
+      minAmountOut: totalOut,
     };
   }
 }

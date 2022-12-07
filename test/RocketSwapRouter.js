@@ -6,6 +6,10 @@ String.prototype.__defineGetter__("ether", function () {
   return ethers.utils.parseEther(this.toString());
 });
 
+String.prototype.__defineGetter__("BN", function () {
+  return ethers.BigNumber.from(this.toString());
+});
+
 const MOCK_POOL_ID = "0x3ac225168df54212a25c1c01fd35bebfea408fdac2e31ddd6f80a4bbf9a5f1cb";
 
 describe("RocketSwapRouter", function () {
@@ -25,10 +29,10 @@ describe("RocketSwapRouter", function () {
     const mockDepositPool = await MockDepositPool.deploy(mockRETH.address);
 
     const MockBalancerVault = await ethers.getContractFactory("MockBalancerVault");
-    const mockBalancerVault = await MockBalancerVault.deploy(mockRETH.address);
+    const mockBalancerVault = await MockBalancerVault.deploy(mockRETH.address, mockWETH.address);
 
     const MockUniswapRouter = await ethers.getContractFactory("MockUniswapRouter");
-    const mockUniswapRouter = await MockUniswapRouter.deploy(mockRETH.address);
+    const mockUniswapRouter = await MockUniswapRouter.deploy(mockRETH.address, mockWETH.address);
 
     const MockDepositSettings = await ethers.getContractFactory("MockDepositSettings");
     const mockDepositSettings = await MockDepositSettings.deploy();
@@ -50,6 +54,20 @@ describe("RocketSwapRouter", function () {
       MOCK_POOL_ID
     );
 
+    await mockRETH.mint(owner.address, "1000".ether);
+
+    await owner.sendTransaction({
+      to: mockRETH.address,
+      value: "100".ether.toString(),
+    });
+
+    await owner.sendTransaction({
+      to: mockWETH.address,
+      value: "100".ether.toString(),
+    });
+
+    await mockRETH.setTotalCollateral("100".ether);
+
     return {
       accounts: {
         owner,
@@ -68,8 +86,98 @@ describe("RocketSwapRouter", function () {
     };
   }
 
-  describe("Swap", function () {
-    it("Should use the deposit pool for entire swap if there is space", async function () {
+  async function checkDepositPoolEvent(accounts, mocks, router, receipt, amountIn) {
+    // Find and verify the mock event for deposit pool
+    let foundEvent = false;
+    for (const event of receipt.events) {
+      if (event.address === mocks.mockDepositPool.address) {
+        const depositEvent = mocks.mockDepositPool.interface.parseLog(event);
+        if (depositEvent.name !== "Deposit") continue;
+        expect(depositEvent.args.amount).to.equal(amountIn);
+        foundEvent = true;
+      }
+    }
+    expect(foundEvent).to.be.true;
+  }
+
+  async function checkRethBurnEvent(accounts, mocks, router, receipt, amountIn) {
+    // Find and verify the mock event for deposit pool
+    let foundEvent = false;
+    for (const event of receipt.events) {
+      if (event.address === mocks.mockRETH.address) {
+        const burnEvent = mocks.mockRETH.interface.parseLog(event);
+        if (burnEvent.name !== "Burn") continue;
+        expect(burnEvent.args.amount).to.equal(amountIn);
+        foundEvent = true;
+      }
+    }
+    expect(foundEvent).to.be.true;
+  }
+
+  async function checkUniswapEvent(accounts, mocks, router, receipt, amountIn, direction) {
+    let foundEvent = false;
+    for (const event of receipt.events) {
+      if (event.address === mocks.mockUniswapRouter.address) {
+        const swapEvent = mocks.mockUniswapRouter.interface.parseLog(event);
+        if (swapEvent.name !== "Swap") continue;
+
+        if (direction === 0) {
+          expect(swapEvent.args.evt.tokenIn).to.equal(mocks.mockWETH.address);
+          expect(swapEvent.args.evt.tokenOut).to.equal(mocks.mockRETH.address);
+          expect(swapEvent.args.evt.recipient).to.equal(accounts.owner.address);
+        } else {
+          expect(swapEvent.args.evt.tokenIn).to.equal(mocks.mockRETH.address);
+          expect(swapEvent.args.evt.tokenOut).to.equal(mocks.mockWETH.address);
+          expect(swapEvent.args.evt.recipient).to.equal(router.address);
+        }
+        expect(swapEvent.args.evt.fee).to.equal(500);
+        expect(swapEvent.args.evt.amountIn).to.equal(amountIn);
+        expect(swapEvent.args.evt.amountOutMinimum).to.equal("0");
+        expect(swapEvent.args.evt.sqrtPriceLimitX96).to.equal("0");
+
+        foundEvent = true;
+      }
+    }
+    expect(foundEvent).to.be.true;
+  }
+
+  function checkBalancerEvent(accounts, mocks, router, receipt, amountIn, direction) {
+    // Find and verify the mock event
+    let foundEvent = false;
+    for (const event of receipt.events) {
+      if (event.address === mocks.mockBalancerVault.address) {
+        const swapEvent = mocks.mockBalancerVault.interface.parseLog(event);
+        if (swapEvent.name !== "Swap") continue;
+
+        expect(swapEvent.args.swap.poolId).to.equal(MOCK_POOL_ID);
+        if (direction === 0) {
+          expect(swapEvent.args.swap.assetIn).to.equal(mocks.mockWETH.address);
+          expect(swapEvent.args.swap.assetOut).to.equal(mocks.mockRETH.address);
+
+          expect(swapEvent.args.funds.recipient).to.equal(accounts.owner.address);
+        } else {
+          expect(swapEvent.args.swap.assetIn).to.equal(mocks.mockRETH.address);
+          expect(swapEvent.args.swap.assetOut).to.equal(mocks.mockWETH.address);
+
+          expect(swapEvent.args.funds.recipient).to.equal(router.address);
+        }
+        expect(swapEvent.args.swap.amount).to.equal(amountIn);
+        expect(swapEvent.args.swap.kind).to.equal("0".ether); // GIVEN_IN
+
+        expect(swapEvent.args.funds.sender).to.equal(router.address);
+        expect(swapEvent.args.funds.fromInternalBalance).to.equal(false);
+        expect(swapEvent.args.funds.toInternalBalance).to.equal(false);
+
+        expect(swapEvent.args.limit).to.equal("0".ether);
+
+        foundEvent = true;
+      }
+    }
+    expect(foundEvent).to.be.true;
+  }
+
+  describe("Swap to", function () {
+    it("Should use the deposit pool for entire swap if it can provide a better rate", async function () {
       const { accounts, mocks, router } = await loadFixture(deploy);
 
       // Enable deposits and set maximum deposit to 1000 ETH
@@ -77,13 +185,35 @@ describe("RocketSwapRouter", function () {
       await mocks.mockDepositSettings.setMaximumDepositPoolSize("1000".ether);
 
       // Do a swap
-      const tx = router.swap("50".ether, "50".ether, "100".ether, { value: "100".ether });
+      const tx = router.swapTo("50".ether, "50".ether, "100".ether, "100".ether, { value: "100".ether });
 
       // Check results
       await expect(tx)
+        .to.changeEtherBalance(accounts.owner, "-100".ether)
+        .to.changeTokenBalance(mocks.mockRETH, accounts.owner, "100".ether)
         .to.emit(mocks.mockDepositPool, "Deposit")
-        .withArgs("100".ether)
-        .to.changeTokenBalance(mocks.mockRETH, accounts.owner, "100".ether);
+        .withArgs("100".ether);
+    });
+
+    it("Should not use the deposit pool if it cannot provide a better rate", async function () {
+      const { accounts, mocks, router } = await loadFixture(deploy);
+
+      // Enable deposits and set maximum deposit to 1000 ETH
+      await mocks.mockDepositSettings.setDepositEnabled(true);
+      await mocks.mockDepositSettings.setMaximumDepositPoolSize("1000".ether);
+
+      // Set rate on deposit pool worse
+      await mocks.mockDepositPool.setRate("0.9".ether);
+      await mocks.mockRETH.setRate("0.9".ether);
+
+      // Do a swap
+      const tx = router.swapTo("50".ether, "0".ether, "100".ether, "100".ether, { value: "100".ether });
+
+      // Check results
+      await expect(tx)
+        .to.changeEtherBalance(accounts.owner, "-100".ether)
+        .to.changeTokenBalance(mocks.mockRETH, accounts.owner, "100".ether)
+        .to.emit(mocks.mockUniswapRouter, "Swap");
     });
 
     it("Should revert if minimum output is not met", async function () {
@@ -97,7 +227,7 @@ describe("RocketSwapRouter", function () {
       await mocks.mockDepositPool.setRate("0.9".ether);
 
       // Do a swap
-      const tx = router.swap("50".ether, "50".ether, "100".ether, { value: "100".ether });
+      const tx = router.swapTo("50".ether, "50".ether, "100".ether, "100".ether, { value: "100".ether });
 
       // Check results
       await expect(tx).to.be.revertedWithCustomError(router, "LessThanMinimum");
@@ -107,88 +237,34 @@ describe("RocketSwapRouter", function () {
       const { accounts, mocks, router } = await loadFixture(deploy);
 
       // Do a swap
-      const tx = await router.swap("100".ether, "0".ether, "100".ether, { value: "100".ether });
+      const tx = await router.swapTo("100".ether, "0".ether, "100".ether, "100".ether, { value: "100".ether });
       const receipt = await tx.wait();
 
       // Find and verify the mock event
-      let foundEvent = false;
-      for (const event of receipt.events) {
-        if (event.address === mocks.mockUniswapRouter.address) {
-          const swapEvent = mocks.mockUniswapRouter.interface.parseLog(event);
-
-          expect(swapEvent.args.evt.tokenIn).to.equal(mocks.mockWETH.address);
-          expect(swapEvent.args.evt.tokenOut).to.equal(mocks.mockRETH.address);
-          expect(swapEvent.args.evt.recipient).to.equal(accounts.owner.address);
-          expect(swapEvent.args.evt.amountIn).to.equal("100".ether);
-          expect(swapEvent.args.evt.amountOutMinimum).to.equal("0");
-          expect(swapEvent.args.evt.sqrtPriceLimitX96).to.equal("0");
-
-          foundEvent = true;
-        }
-      }
-      expect(foundEvent).to.be.true;
+      await checkUniswapEvent(accounts, mocks, router, receipt, "100".ether, 0);
     });
 
     it("Should use balancer correctly", async function () {
       const { accounts, mocks, router } = await loadFixture(deploy);
 
       // Do a swap
-      const tx = await router.swap("0".ether, "100".ether, "100".ether, { value: "100".ether });
+      const tx = await router.swapTo("0".ether, "100".ether, "100".ether, "100".ether, { value: "100".ether });
       const receipt = await tx.wait();
 
       // Find and verify the mock event
-      let foundEvent = false;
-      for (const event of receipt.events) {
-        if (event.address === mocks.mockBalancerVault.address) {
-          const swapEvent = mocks.mockBalancerVault.interface.parseLog(event);
-
-          expect(swapEvent.args.swap.poolId).to.equal(MOCK_POOL_ID);
-          expect(swapEvent.args.swap.assetIn).to.equal(mocks.mockWETH.address);
-          expect(swapEvent.args.swap.assetOut).to.equal(mocks.mockRETH.address);
-          expect(swapEvent.args.swap.amount).to.equal("100".ether);
-          expect(swapEvent.args.swap.kind).to.equal("0".ether); // GIVEN_IN
-
-          expect(swapEvent.args.funds.sender).to.equal(router.address);
-          expect(swapEvent.args.funds.fromInternalBalance).to.equal(false);
-          expect(swapEvent.args.funds.recipient).to.equal(accounts.owner.address);
-          expect(swapEvent.args.funds.toInternalBalance).to.equal(false);
-
-          expect(swapEvent.args.limit).to.equal("0".ether);
-
-          foundEvent = true;
-        }
-      }
-      expect(foundEvent).to.be.true;
+      await checkBalancerEvent(accounts, mocks, router, receipt, "100".ether, 0);
     });
 
     it("Should split swaps up correctly", async function () {
       const { accounts, mocks, router } = await loadFixture(deploy);
 
       // Do a swap
-      const tx = await router.swap("50".ether, "50".ether, "100".ether, { value: "100".ether });
+      const tx = await router.swapTo("50".ether, "50".ether, "100".ether, "100".ether, { value: "100".ether });
       const receipt = await tx.wait();
 
-      // Find and verify the mock event for balancer
-      let foundEvent = false;
-      for (const event of receipt.events) {
-        if (event.address === mocks.mockBalancerVault.address) {
-          const swapEvent = mocks.mockBalancerVault.interface.parseLog(event);
-          expect(swapEvent.args.swap.amount).to.equal("50".ether);
-          foundEvent = true;
-        }
-      }
-      expect(foundEvent).to.be.true;
-
-      // Find and verify the mock event for uniswap
-      foundEvent = false;
-      for (const event of receipt.events) {
-        if (event.address === mocks.mockUniswapRouter.address) {
-          const swapEvent = mocks.mockUniswapRouter.interface.parseLog(event);
-          expect(swapEvent.args.evt.amountIn).to.equal("50".ether);
-          foundEvent = true;
-        }
-      }
-      expect(foundEvent).to.be.true;
+      // Find and verify the mock events
+      await checkBalancerEvent(accounts, mocks, router, receipt, "50".ether, 0);
+      await checkUniswapEvent(accounts, mocks, router, receipt, "50".ether, 0);
     });
 
     it("Should split excess beyond deposit pool limit correctly", async function () {
@@ -199,41 +275,13 @@ describe("RocketSwapRouter", function () {
       await mocks.mockDepositSettings.setMaximumDepositPoolSize("50".ether);
 
       // Do a swap
-      const tx = await router.swap("50".ether, "50".ether, "100".ether, { value: "100".ether });
+      const tx = await router.swapTo("75".ether, "25".ether, "100".ether, "100".ether, { value: "100".ether });
       const receipt = await tx.wait();
 
-      // Find and verify the mock event for deposit pool
-      let foundEvent = false;
-      for (const event of receipt.events) {
-        if (event.address === mocks.mockDepositPool.address) {
-          const swapEvent = mocks.mockDepositPool.interface.parseLog(event);
-          expect(swapEvent.args.amount).to.equal("50".ether);
-          foundEvent = true;
-        }
-      }
-      expect(foundEvent).to.be.true;
-
-      // Find and verify the mock event for balancer
-      foundEvent = false;
-      for (const event of receipt.events) {
-        if (event.address === mocks.mockBalancerVault.address) {
-          const swapEvent = mocks.mockBalancerVault.interface.parseLog(event);
-          expect(swapEvent.args.swap.amount).to.equal("25".ether);
-          foundEvent = true;
-        }
-      }
-      expect(foundEvent).to.be.true;
-
-      // Find and verify the mock event for uniswap
-      foundEvent = false;
-      for (const event of receipt.events) {
-        if (event.address === mocks.mockUniswapRouter.address) {
-          const swapEvent = mocks.mockUniswapRouter.interface.parseLog(event);
-          expect(swapEvent.args.evt.amountIn).to.equal("25".ether);
-          foundEvent = true;
-        }
-      }
-      expect(foundEvent).to.be.true;
+      // Find and verify the mock events
+      await checkDepositPoolEvent(accounts, mocks, router, receipt, "50".ether);
+      await checkUniswapEvent(accounts, mocks, router, receipt, "37.5".ether, 0);
+      await checkBalancerEvent(accounts, mocks, router, receipt, "12.5".ether, 0);
     });
 
     it("Should not use deposit pool for swaps < 0.01 ETH", async function () {
@@ -244,19 +292,114 @@ describe("RocketSwapRouter", function () {
       await mocks.mockDepositSettings.setMaximumDepositPoolSize("1000".ether);
 
       // Do a swap
-      const tx = await router.swap("100".ether, "0".ether, "0.009".ether, { value: "0.009".ether });
+      const tx = await router.swapTo("100".ether, "0".ether, "0.009".ether, "0.009".ether, { value: "0.009".ether });
       const receipt = await tx.wait();
 
       // Should have sent the entire 0.009 to Uniswap
-      let foundEvent = false;
-      for (const event of receipt.events) {
-        if (event.address === mocks.mockUniswapRouter.address) {
-          const swapEvent = mocks.mockUniswapRouter.interface.parseLog(event);
-          expect(swapEvent.args.evt.amountIn).to.equal("0.009".ether);
-          foundEvent = true;
-        }
-      }
-      expect(foundEvent).to.be.true;
+      await checkUniswapEvent(accounts, mocks, router, receipt, "0.009".ether, 0);
+    });
+  });
+
+  describe("Swap from", function () {
+    it("Should use the burn feature for entire swap if it can provide a better rate", async function () {
+      const { accounts, mocks, router } = await loadFixture(deploy);
+
+      // Enable deposits and set maximum deposit to 1000 ETH
+      await mocks.mockDepositSettings.setDepositEnabled(true);
+      await mocks.mockDepositSettings.setMaximumDepositPoolSize("1000".ether);
+
+      // Do a swap
+      await mocks.mockRETH.approve(router.address, "100".ether);
+      const tx = router.swapFrom("50".ether, "50".ether, "100".ether, "100".ether, "100".ether);
+
+      // Check results
+      await expect(tx)
+        .to.changeTokenBalance(mocks.mockRETH, accounts.owner, "-100".ether)
+        .to.changeEtherBalance(accounts.owner, "100".ether)
+        .to.emit(mocks.mockRETH, "Burn")
+        .withArgs("100".ether);
+    });
+
+    it("Should revert if minimum output is not met", async function () {
+      const { accounts, mocks, router } = await loadFixture(deploy);
+
+      // Enable deposits and set maximum deposit to 1000 ETH
+      await mocks.mockDepositSettings.setDepositEnabled(true);
+      await mocks.mockDepositSettings.setMaximumDepositPoolSize("1000".ether);
+
+      // Set rate to 0.9 so we only get 90 rETH resulting in a revert
+      await mocks.mockUniswapRouter.setRate("1.1".ether);
+      await mocks.mockBalancerVault.setRate("1.1".ether);
+
+      // Do a swap
+      await mocks.mockRETH.approve(router.address, "100".ether);
+      const tx = router.swapFrom("50".ether, "50".ether, "100".ether, "110".ether, "100".ether);
+
+      // Check results
+      await expect(tx).to.be.revertedWithCustomError(router, "LessThanMinimum");
+    });
+
+    it("Should use uniswap correctly", async function () {
+      const { accounts, mocks, router } = await loadFixture(deploy);
+
+      // Prevent protocol burns
+      await mocks.mockRETH.setRate("1.1".ether);
+
+      // Do a swap
+      await mocks.mockRETH.approve(router.address, "100".ether);
+      const tx = await router.swapFrom("100".ether, "0".ether, "100".ether, "100".ether, "100".ether);
+      const receipt = await tx.wait();
+
+      // Find and verify the mock event
+      await checkUniswapEvent(accounts, mocks, router, receipt, "100".ether, 1);
+    });
+
+    it("Should use balancer correctly", async function () {
+      const { accounts, mocks, router } = await loadFixture(deploy);
+
+      // Prevent protocol burns
+      await mocks.mockRETH.setRate("1.1".ether);
+
+      // Do a swap
+      await mocks.mockRETH.approve(router.address, "100".ether);
+      const tx = await router.swapFrom("0".ether, "100".ether, "100".ether, "100".ether, "100".ether);
+      const receipt = await tx.wait();
+
+      // Find and verify the mock event
+      await checkBalancerEvent(accounts, mocks, router, receipt, "100".ether, 1);
+    });
+
+    it("Should split swaps up correctly", async function () {
+      const { accounts, mocks, router } = await loadFixture(deploy);
+
+      // Prevent protocol burns
+      await mocks.mockRETH.setRate("1.1".ether);
+
+      // Do a swap
+      await mocks.mockRETH.approve(router.address, "100".ether);
+      const tx = await router.swapFrom("50".ether, "50".ether, "100".ether, "100".ether, "100".ether);
+      const receipt = await tx.wait();
+
+      // Find and verify the mock events
+      await checkBalancerEvent(accounts, mocks, router, receipt, "50".ether, 1);
+      await checkUniswapEvent(accounts, mocks, router, receipt, "50".ether, 1);
+    });
+
+    it("Should split excess beyond deposit pool limit correctly", async function () {
+      const { accounts, mocks, router } = await loadFixture(deploy);
+
+      // Set total collateral to 50 ETH
+      await mocks.mockRETH.setTotalCollateral("50".ether);
+
+      // Do a swap
+      await mocks.mockRETH.approve(router.address, "100".ether);
+      const tx = await router.swapFrom("50".ether, "50".ether, "100".ether, "100".ether, "100".ether);
+      const receipt = await tx.wait();
+
+      // Find and verify the mock events
+      await checkRethBurnEvent(accounts, mocks, router, receipt, "50".ether);
+      await checkBalancerEvent(accounts, mocks, router, receipt, "25".ether, 1);
+      await checkUniswapEvent(accounts, mocks, router, receipt, "25".ether, 1);
     });
   });
 });

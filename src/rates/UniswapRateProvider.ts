@@ -26,7 +26,7 @@ class UniswapRateProvider extends RateProvider {
     this.immutables = null;
   }
 
-  public async getAmountOut(amountIn: BigNumber): Promise<BigNumber> {
+  public async getRethOut(ethIn: BigNumber): Promise<BigNumber> {
     // Lazy load pool immutables
     if (!this.immutables) {
       this.immutables = await this.getPoolImmutables();
@@ -38,7 +38,24 @@ class UniswapRateProvider extends RateProvider {
       immutables.token1,
       immutables.token0,
       immutables.fee,
-      amountIn,
+      ethIn,
+      0
+    );
+  }
+
+  public async getEthOut(rethIn: BigNumber): Promise<BigNumber> {
+    // Lazy load pool immutables
+    if (!this.immutables) {
+      this.immutables = await this.getPoolImmutables();
+    }
+
+    // Call the quoter contract to determine the amount out of a swap, given an amount in
+    const immutables = this.immutables;
+    return await this.quoterContract.callStatic.quoteExactInputSingle(
+      immutables.token0,
+      immutables.token1,
+      immutables.fee,
+      rethIn,
       0
     );
   }
