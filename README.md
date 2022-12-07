@@ -22,7 +22,7 @@ const signer = ...;
 const router = new RocketPoolRouter(provider);
 
 // Calculate optimal split between liquidity pools
-const swap = await router.optimiseSwap(ethers.utils.parseEther('10'));
+const swap = await router.optimiseSwap(SwapDirection.toETH, ethers.utils.parseEther('10'));
 
 // Allow 1% slippage
 swap.amountOut = swap.amountOut.mul(99).div(100);
