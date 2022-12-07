@@ -3,9 +3,8 @@
 This repository contains the Rocket Pool Swap Router contract and route optimiser which are
 designed to split ETH/rETH swaps optimally between Uniswap and Balancer.
 
-The Rocket Pool deposit pool is always used as a first source of liquidity. Whatever is left
-over (which will often be the entire amount) is split between Uniswap and Balancer based on the
-caller's inputs.
+If the rETH can be minted or burned at a better rate by the protocol than the market, it will route as much of the
+swap through the protocol as possible. The remainder will be traded on the market at the specified split.
 
 There is a JavaScript client component `RocketPoolRouter` which implements a basic price optimisation
 strategy to calculate the best split between the Uniswap and Balancer liquidity sources at the present moment.
