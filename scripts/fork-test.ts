@@ -14,6 +14,7 @@ const MAINNET_ROCKET_STORAGE = "0x1d8f8f00cfa6758d7bE78336684788Fb0ee0Fa46";
 const MAINNET_WETH = "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2";
 const MAINNET_RETH = "0xae78736cd615f374d3085123a210448e74fc6393";
 const MAINNET_UNISWAP_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564";
+const MAINNET_UNISWAP_QUOTER = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6";
 const MAINNET_BALANCER_VAULT = "0xba12222222228d8ba445958a75a0704d566bf2c8";
 
 async function getRethBalance(address: string) {
@@ -46,6 +47,7 @@ async function go() {
     MAINNET_WETH,
     MAINNET_UNISWAP_ROUTER,
     "500",
+    MAINNET_UNISWAP_QUOTER,
     MAINNET_BALANCER_VAULT,
     BalancerRateProvider.MAINNET_POOL_ID
   );
@@ -58,7 +60,7 @@ async function go() {
   // Swap to rETH
   {
     // Calculate the optimal swap of 50 ETH
-    const swapTo = await router.optimiseSwap(SwapDirection.ToRETH, ethers.utils.parseEther("50"));
+    const swapTo = await router.optimiseSwap(SwapDirection.ToRETH, ethers.utils.parseEther("50"), 20);
 
     // Output the swap params
     console.log(swapTo);
@@ -81,7 +83,7 @@ async function go() {
   // Swap back to ETH
   {
     // Calculate the optimal swap of 50 rETH back to ETH
-    const swapFrom = await router.optimiseSwap(SwapDirection.ToETH, ethers.utils.parseEther("20"));
+    const swapFrom = await router.optimiseSwap(SwapDirection.ToETH, ethers.utils.parseEther("20"), 20);
 
     // Output the swap params
     console.log(swapFrom);

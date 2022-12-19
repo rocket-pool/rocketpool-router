@@ -34,6 +34,9 @@ describe("RocketSwapRouter", function () {
     const MockUniswapRouter = await ethers.getContractFactory("MockUniswapRouter");
     const mockUniswapRouter = await MockUniswapRouter.deploy(mockRETH.address, mockWETH.address);
 
+    const MockUniswapQuoter = await ethers.getContractFactory("MockUniswapQuoter");
+    const mockUniswapQuoter = await MockUniswapQuoter.deploy(mockRETH.address, mockWETH.address);
+
     const MockDepositSettings = await ethers.getContractFactory("MockDepositSettings");
     const mockDepositSettings = await MockDepositSettings.deploy();
 
@@ -50,6 +53,7 @@ describe("RocketSwapRouter", function () {
       mockWETH.address,
       mockUniswapRouter.address,
       "500",
+      mockUniswapQuoter.address,
       mockBalancerVault.address,
       MOCK_POOL_ID
     );
@@ -79,6 +83,7 @@ describe("RocketSwapRouter", function () {
         mockDepositPool,
         mockBalancerVault,
         mockUniswapRouter,
+        mockUniswapQuoter,
         mockRETH,
         mockWETH,
       },
@@ -175,6 +180,18 @@ describe("RocketSwapRouter", function () {
     }
     expect(foundEvent).to.be.true;
   }
+
+  describe.only("Optimise", function () {
+    it("Should optimise a swap", async function () {
+      const { accounts, mocks, router } = await loadFixture(deploy);
+
+      await mocks.mockUniswapQuoter.setRate("0.1".ether);
+
+      // Do a swap
+      const tx = await router.callStatic.optimiseSwapTo("50".ether, 10);
+      console.log(tx);
+    });
+  });
 
   describe("Swap to", function () {
     it("Should use the deposit pool for entire swap if it can provide a better rate", async function () {

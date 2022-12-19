@@ -19,10 +19,6 @@
     "compile": "hardhat compile"
   },
   "dependencies": {
-    "@balancer-labs/sdk": "^0.1.38",
-    "@balancer-labs/sor": "^4.0.1-beta.14",
-    "@balancer-labs/v2-interfaces": "^0.1.0",
-    "@balancer-labs/v2-vault": "^2.0.0",
     "ethers": "^5.7.2"
   }
 }
