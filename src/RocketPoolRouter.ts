@@ -22,7 +22,7 @@ interface RocketPoolRouterOptions {
 }
 
 class RocketPoolRouter {
-  public static MAINNET_ADDRESS = "0xf125870b3f34f3456e98f8d161d8628da4ec3ab9";
+  public static MAINNET_ADDRESS = "0x16d5a408e807db8ef7c578279beeee6b228f1c1c";
 
   private options: RocketPoolRouterOptions;
 
